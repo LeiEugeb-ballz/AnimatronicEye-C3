@@ -3,10 +3,10 @@
 A four-servo, 3D-printed eye with a browser-based radar joystick. The ESP32-C3 SuperMini serves the interface over its own Wi-Fi access point.
 
 - Drag to look around and adjust each eyelid independently.
-- Trigger Blink, Scan, Diagonal, Roll, or Random Show.
+- Leave it in Desk mode for small glances, random blinks, and one-minute naps, or trigger Blink, Scan, Diagonal, Roll, and Random Show manually.
 - Save per-servo calibration on the board. Enable outputs explicitly after boot and use **STOP / DETACH** to end motion.
 
-[ESP32-C3 wiring, firmware build, and controls](AnimatronicEyeC3/README.md)
+[Wiring, firmware build, and controls](AnimatronicEyeC3/README.md) · [Firmware downloads](https://github.com/LeiEugeb-ballz/AnimatronicEye-C3/releases)
 
 ## Original project
 

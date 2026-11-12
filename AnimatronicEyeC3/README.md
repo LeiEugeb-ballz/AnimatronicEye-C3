@@ -35,22 +35,20 @@ not physically remove external servo power.
 
 ## Network access
 
-This final build is deliberately AP-only for maximum ESP32-C3 stability inside
-the chassis:
+Connect directly to the board over its Wi-Fi access point.
 
 - SSID: `AnimatronicEye`
 - Password: `eyecontrol32`
 - Address: `http://192.168.4.1`
 - Recovery interface: `http://192.168.4.1/basic`
 
-Router/STA association is disabled. The earlier AP+STA build is preserved under
-`releases/` for testing with another ESP32-C3 later.
+The board runs in AP-only mode.
 
 ## Web UI
 
-- Current firmware: `2.1.2-ap`.
+- Current firmware: `2.2.0-ap`.
 - **Control:** touch XY gaze pad, independent eyelids, Web/Classic/Dual modes.
-- **Perform:** Blink, Scan, Diagonal, Roll, Centre and continuous Random Show.
+- **Perform:** Blink, Scan, Diagonal, Roll, Centre continuous Random Show, Desk mode, and Nap now.
 - **Calibrate:** guarded per-servo endpoints plus four-axis joystick capture.
 - **Setup:** AP status, firmware and device telemetry.
 
@@ -59,6 +57,17 @@ The four section tabs work independently of the controller script. The full page
 Servo signals always boot detached. Animations never arm outputs automatically.
 Press **Enable outputs** explicitly, and use the persistent red STOP button to
 cancel motion and detach every channel.
+
+## Desk mode
+
+Enable all outputs, then select **Perform → Desk mode**. The eye holds a series
+of small, varied glances and sometimes blinks. After roughly three to six minutes
+awake it droops shut for one minute, wakes, and goes back to looking around.
+The sequence runs on the ESP32-C3 while the browser is closed.
+
+**Nap now** starts the nap immediately. If Desk mode is active, it resumes after
+waking. A radar-pad command, **End show + centre**, or **STOP / DETACH** ends
+Desk mode. Servo motion follows the saved calibration for all four channels.
 
 ## Joystick modes
 
@@ -78,7 +87,5 @@ pio run
 pio run --target upload --upload-port COM21
 ```
 
-The native USB connection proved mechanically unreliable while the controller
-was installed in the chassis. If a future upload drops, flash outside the chassis
-or enter the ROM loader manually, then use a low upload speed. The final source
+Use the COM port assigned to your board. The downloadable application image is intended for an existing installation with the same partition table. The factory image includes the bootloader and partition table. The final source
 is the single file `src/AnimatronicEyeC3/AnimatronicEyeC3.ino`.

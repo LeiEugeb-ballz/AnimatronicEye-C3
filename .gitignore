@@ -2,3 +2,4 @@
 .playwright-cli/
 *.ino.cpp
 *.bin
+/AnimatronicEyeC3/releases/

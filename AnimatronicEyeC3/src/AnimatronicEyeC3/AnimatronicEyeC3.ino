@@ -17,7 +17,7 @@ constexpr uint8_t JOYSTICK_SWITCH_2_PIN = 21;
 
 constexpr char AP_SSID[] = "AnimatronicEye";
 constexpr char AP_PASSWORD[] = "eyecontrol32";
-constexpr char FIRMWARE_VERSION[] = "2.1.2-ap";
+constexpr char FIRMWARE_VERSION[] = "2.2.0-ap";
 constexpr char CONFIG_NAMESPACE[] = "eye-c3-v1";
 
 constexpr int SERVO_MIN_US = 500;
@@ -47,7 +47,9 @@ enum MotionId : uint8_t {
   MOTION_DIAGONAL,
   MOTION_ROLL,
   MOTION_CENTER,
-  MOTION_RANDOM
+  MOTION_RANDOM,
+  MOTION_DESK,
+  MOTION_NAP
 };
 
 struct ServoCalibration {
@@ -84,9 +86,9 @@ const MotionFrame BLINK_FRAMES[] = {
 };
 
 const MotionFrame SCAN_FRAMES[] = {
-  {-75, 0, 90, 90, 650}, {0, 0, 0, 0, 350},
-  {75, 0, 90, 90, 650}, {0, 0, 0, 0, 350},
-  {0, 0, KEEP_VALUE, KEEP_VALUE, 450}
+  {-70, 0, 100, 100, 950}, {-70, 0, 0, 0, 360},
+  {-70, 0, 100, 100, 420}, {70, 0, 100, 100, 1200},
+  {0, 0, KEEP_VALUE, KEEP_VALUE, 550}
 };
 
 const MotionFrame DIAGONAL_FRAMES[] = {
@@ -108,6 +110,15 @@ const MotionFrame CENTER_FRAMES[] = {
   {0, 0, KEEP_VALUE, KEEP_VALUE, 650}
 };
 
+const MotionFrame NAP_FRAMES[] = {
+  {0, 0, 60, 75, 650}, {0, 0, 25, 45, 600}, {0, 0, 0, 0, 60000},
+  {0, 0, 50, 65, 600}, {0, 0, 100, 100, 480},
+  {0, 0, 0, 0, 410}, {0, 0, 100, 100, 500}
+};
+
+constexpr uint32_t DESK_NAP_MIN_MS = 180000;
+constexpr uint32_t DESK_NAP_SPREAD_MS = 180000;
+
 Servo servo[SERVO_COUNT];
 ServoCalibration servoCal[SERVO_COUNT];
 AxisCalibration axisCal[AXIS_COUNT];
@@ -127,6 +138,12 @@ uint32_t lastJoystickReadMs = 0;
 
 MotionId activeMotion = MOTION_NONE;
 bool randomShow = false;
+bool deskMode = false;
+MotionFrame deskFrames[3];
+uint8_t deskFrameCount = 0;
+uint32_t deskStartedMs = 0;
+uint32_t deskNapDelayMs = 0;
+MotionFrame displayPose = {0, 0, 100, 100, 0};
 uint8_t motionFrameIndex = 0;
 uint32_t motionFrameStartedMs = 0;
 int motionBaseX = 0;
@@ -166,7 +183,7 @@ const char APP_JS[] PROGMEM = R"JS(
   function setMode(mode){return act(()=>api(`/api/mode?value=${mode}`),`Mode: ${mode}`)}
   function motion(name){return act(()=>api(`/api/animation?name=${name}`),name==='stop'?'Show ended':`${name} started`)}
   function setPose(x,y,top,bottom){webX=x;webY=y;controls.top.value=top;controls.bottom.value=bottom;preview();sendControl(true)}
-  function preview(){const x=Number(webX),y=Number(webY),top=Number(controls.top.value),bottom=Number(controls.bottom.value);$('xv').textContent=x;$('yv').textContent=y;$('tv').textContent=top+'%';$('bv').textContent=bottom+'%';$('padDot').style.left=(50+x*.42)+'%';$('padDot').style.top=(50+y*.42)+'%';$('iris').style.transform=`translate(calc(-50% + ${x*.38}px),calc(-50% + ${y*.25}px))`;$('topLid').style.height=(50-top*.35)+'%';$('bottomLid').style.height=(50-bottom*.35)+'%'}
+  function preview(pose={x:webX,y:webY,top:controls.top.value,bottom:controls.bottom.value}){const x=Number(pose.x),y=Number(pose.y),top=Number(pose.top),bottom=Number(pose.bottom);$('xv').textContent=x;$('yv').textContent=y;$('tv').textContent=top+'%';$('bv').textContent=bottom+'%';$('padDot').style.left=(50+x*.42)+'%';$('padDot').style.top=(50+y*.42)+'%';$('iris').style.transform=`translate(calc(-50% + ${x*.38}px),calc(-50% + ${y*.25}px))`;$('topLid').style.height=(50-top*.35)+'%';$('bottomLid').style.height=(50-bottom*.35)+'%'}
   function discardPendingPose(){
    clearTimeout(sendTimer);
    sendTimer=0;
@@ -202,8 +219,8 @@ const char APP_JS[] PROGMEM = R"JS(
   }
   function buildCalibration(s){const servoRoot=$('servos');servoRoot.innerHTML=s.servos.map((v,i)=>`<article id="servoCard${i}" class="servo-card locked"><div class="row spread"><div><h3>${names[i]}</h3><span class="small muted">GPIO ${v.pin}</span></div><span id="servoAngle${i}" class="servo-angle">${Math.round(v.current)}°</span></div><div class="servo-tools"><input id="cal${i}" type="range" min="0" max="180" value="${Math.round(v.target)}" onchange="calMove(${i},this.value)"><div class="row"><button id="servoPower${i}" onclick="power('${v.enabled?'stop':'enable'}',${i})">${v.enabled?'Detach':'Enable one'}</button></div><div class="saved"><button onclick="calSave(${i},'a')">Set ${slots[i][0]}<br><span id="save${i}a">${v.a}°</span></button><button onclick="calSave(${i},'center')">Set ${slots[i][1]}<br><span id="save${i}center">${v.center}°</span></button><button onclick="calSave(${i},'b')">Set ${slots[i][2]}<br><span id="save${i}b">${v.b}°</span></button></div></div></article>`).join('');
    const joyRoot=$('joysticks');joyRoot.innerHTML=s.joystick.map((v,i)=>`<article class="joy-card"><div class="row spread"><h3>J${i<2?1:2}${i%2?'Y':'X'} · GPIO ${v.pin}</h3><span id="joyRaw${i}" class="value">${v.raw}</span></div><div class="joy-values"><button onclick="joyCapture(${i},'min')">MIN<br><span id="joy${i}min">${v.min}</span></button><button onclick="joyCapture(${i},'center')">CENTRE<br><span id="joy${i}center">${v.center}</span></button><button onclick="joyCapture(${i},'max')">MAX<br><span id="joy${i}max">${v.max}</span></button></div><label class="small"><input id="joyInv${i}" type="checkbox" onchange="joyInvert(${i},this.checked)" ${v.inverted?'checked':''}> invert axis</label></article>`).join('');calBuilt=true}
-  function render(s){state=s;lastStateAt=Date.now();setConnected(true);clearError();const armed=s.allEnabled;$('signal').textContent=armed?'ALL OUTPUTS ARMED':s.anyEnabled?'PARTIAL OUTPUTS ARMED':'OUTPUTS DETACHED';$('signal').className='signal-readout '+(s.anyEnabled?'on':'');document.querySelectorAll('.needs-power').forEach(el=>el.disabled=!armed);document.querySelectorAll('.mode').forEach(el=>el.classList.toggle('active',el.dataset.mode===s.mode));document.querySelectorAll('.motion').forEach(el=>el.classList.toggle('active',el.dataset.motion===s.animation));$('motionState').textContent=(s.animation||'idle').toUpperCase();
-   if(pointerId===null&&!pendingPose&&!poseInFlight&&document.activeElement?.type!=='range'){webX=s.control.x;webY=s.control.y;controls.top.value=s.control.top;controls.bottom.value=s.control.bottom;preview()}if(!calBuilt)buildCalibration(s);s.servos.forEach((v,i)=>{const a=$(`servoAngle${i}`);if(a)a.textContent=`${Math.round(v.current)}°`;const p=$(`servoPower${i}`);if(p){p.textContent=v.enabled?'Detach':'Enable one';p.onclick=()=>power(v.enabled?'stop':'enable',i)}if(document.activeElement!==$(`cal${i}`))$(`cal${i}`).value=Math.round(v.target);$(`save${i}a`).textContent=v.a+'°';$(`save${i}center`).textContent=v.center+'°';$(`save${i}b`).textContent=v.b+'°'});s.joystick.forEach((v,i)=>{$(`joyRaw${i}`).textContent=v.raw;$(`joy${i}min`).textContent=v.min;$(`joy${i}center`).textContent=v.center;$(`joy${i}max`).textContent=v.max;$(`joyInv${i}`).checked=v.inverted});
+  function render(s){state=s;lastStateAt=Date.now();setConnected(true);clearError();const armed=s.allEnabled;$('signal').textContent=armed?'ALL OUTPUTS ARMED':s.anyEnabled?'PARTIAL OUTPUTS ARMED':'OUTPUTS DETACHED';$('signal').className='signal-readout '+(s.anyEnabled?'on':'');document.querySelectorAll('.needs-power').forEach(el=>el.disabled=!armed);document.querySelectorAll('.mode').forEach(el=>el.classList.toggle('active',el.dataset.mode===s.mode));document.querySelectorAll('.motion').forEach(el=>el.classList.toggle('active',el.dataset.motion===s.animation));$('motionState').textContent=(s.animation==='desk'?'Desk mode · '+s.animationDetail:s.animation||'idle').toUpperCase();
+   if(pointerId===null&&!pendingPose&&!poseInFlight&&document.activeElement?.type!=='range'){webX=s.control.x;webY=s.control.y;controls.top.value=s.control.top;controls.bottom.value=s.control.bottom;preview(s.displayPose)}if(!calBuilt)buildCalibration(s);s.servos.forEach((v,i)=>{const a=$(`servoAngle${i}`);if(a)a.textContent=`${Math.round(v.current)}°`;const p=$(`servoPower${i}`);if(p){p.textContent=v.enabled?'Detach':'Enable one';p.onclick=()=>power(v.enabled?'stop':'enable',i)}if(document.activeElement!==$(`cal${i}`))$(`cal${i}`).value=Math.round(v.target);$(`save${i}a`).textContent=v.a+'°';$(`save${i}center`).textContent=v.center+'°';$(`save${i}b`).textContent=v.b+'°'});s.joystick.forEach((v,i)=>{$(`joyRaw${i}`).textContent=v.raw;$(`joy${i}min`).textContent=v.min;$(`joy${i}center`).textContent=v.center;$(`joy${i}max`).textContent=v.max;$(`joyInv${i}`).checked=v.inverted});
    $('apSsid').textContent=s.network.apSsid;$('apIp').textContent=s.network.apIp;$('staSsid').textContent='AP only';$('staIp').textContent='Router connection disabled';$('firmware').textContent=s.firmware;$('uptime').textContent=Math.floor(s.uptime/1000)+'s';$('heap').textContent=Math.round(s.heap/1024)+'KB';$('switches').textContent=(s.switch1?'UP':'DOWN')+' / '+(s.switch2?'UP':'DOWN')}
   async function refresh(){
    if(refreshing)return;
@@ -283,7 +300,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 <section id="page-control" class="page active"><div class="control-grid"><div class="panel"><div class="row spread"><h2>Gaze vector</h2><span class="eyebrow">TOUCH / DRAG</span></div><div id="pad" class="pad"><span class="pad-label n">UP</span><span class="pad-label s">DOWN</span><span class="pad-label w">LEFT</span><span class="pad-label e">RIGHT</span><div id="padDot" class="pad-dot"></div></div><div class="telemetry"><div class="metric"><span class="muted small">HORIZONTAL</span><b id="xv">0</b></div><div class="metric"><span class="muted small">VERTICAL</span><b id="yv">0</b></div></div></div>
 <div class="panel"><h2>Control surface</h2><h3>Input authority</h3><div class="modes"><button class="mode" data-mode="web">WEB UI</button><button class="mode" data-mode="classic">JOYSTICK 1</button><button class="mode" data-mode="dual">DUAL STICK</button></div><p class="small muted">Classic: J1 moves the eye and lids follow vertical gaze. Dual: J1 moves the eye; J2 controls the lids.</p><div class="field"><div class="field-head"><label for="top">Top lid openness</label><span id="tv" class="value">100%</span></div><input id="top" class="needs-power" type="range" min="0" max="100" value="100"></div><div class="field"><div class="field-head"><label for="bottom">Bottom lid openness</label><span id="bv" class="value">100%</span></div><input id="bottom" class="needs-power" type="range" min="0" max="100" value="100"></div><div class="row"><button class="primary needs-power" onclick="sendControl(true)">Apply pose</button><button class="ghost needs-power" onclick="setPose(0,0,100,100)">Open + centre</button></div></div></div></section>
 
-<section id="page-perform" class="page"><div class="panel"><div class="row spread"><div><div class="eyebrow">ORIGINAL MOTION SET // REBUILT</div><h2>Performance console</h2></div><div><span class="muted small">ACTIVE </span><span id="motionState" class="value">IDLE</span></div></div><div class="motion-grid"><button class="motion needs-power" data-motion="blink"><strong>Blink</strong><span>Close, hold, restore</span></button><button class="motion needs-power" data-motion="scan"><strong>Scan</strong><span>Side-to-side with blinks</span></button><button class="motion needs-power" data-motion="diagonal"><strong>Diagonal</strong><span>Corner sweep and eyelid tracking</span></button><button class="motion needs-power" data-motion="roll"><strong>Roll</strong><span>Full circular eye roll</span></button><button class="motion needs-power" data-motion="center"><strong>Centre</strong><span>Return to neutral gaze</span></button><button class="motion needs-power" data-motion="random"><strong>Random show</strong><span>Continuous mixed performance</span></button></div><div class="row" style="margin-top:13px"><button class="amber" onclick="motion('stop')">End show + centre</button><span class="small muted">Animation selection never enables outputs automatically.</span></div></div></section>
+<section id="page-perform" class="page"><div class="panel"><div class="row spread"><div><div class="eyebrow">ORIGINAL MOTION SET // REBUILT</div><h2>Performance console</h2></div><div><span class="muted small">ACTIVE </span><span id="motionState" class="value">IDLE</span></div></div><div class="motion-grid"><button class="motion needs-power" data-motion="blink"><strong>Blink</strong><span>Close, hold, restore</span></button><button class="motion needs-power" data-motion="scan"><strong>Scan</strong><span>Side-to-side with blinks</span></button><button class="motion needs-power" data-motion="diagonal"><strong>Diagonal</strong><span>Corner sweep and eyelid tracking</span></button><button class="motion needs-power" data-motion="roll"><strong>Roll</strong><span>Full circular eye roll</span></button><button class="motion needs-power" data-motion="center"><strong>Centre</strong><span>Return to neutral gaze</span></button><button class="motion needs-power" data-motion="random"><strong>Random show</strong><span>Continuous mixed performance</span></button><button class="motion needs-power" data-motion="desk"><strong>Desk mode</strong><span>Glances, blinks and occasional naps</span></button><button class="motion needs-power" data-motion="nap"><strong>Nap now</strong><span>Doze for one minute, then wake</span></button></div><div class="row" style="margin-top:13px"><button class="amber" onclick="motion('stop')">End show + centre</button><span class="small muted">Animation selection never enables outputs automatically.</span></div></div></section>
 
 <section id="page-calibrate" class="page"><div class="panel"><div class="lock"><button id="calLock" class="amber" onclick="toggleCalibration()">Unlock calibration</button><div><h2>Mechanical calibration</h2><p class="callout">Only unlock this section when linkages are free or the mechanism has already been mechanically centred. STOP removes pulses; it does not cut the external servo rail.</p></div></div><div id="servos" class="servo-grid"></div></div><div class="panel" style="margin-top:16px"><div class="row spread"><div><div class="eyebrow">OPTIONAL INPUT</div><h2>Dual-joystick calibration</h2></div><span class="small muted">J1X/J1Y/J2X/J2Y · GPIO 0/1/3/4</span></div><p class="small muted">Capture both stick centres while released. Then move one axis fully to each end and capture Min and Max. Switch inputs are GPIO20 and GPIO21.</p><div id="joysticks" class="joy-grid"></div></div></section>
 
@@ -362,6 +379,8 @@ const char *motionName(MotionId motion) {
     case MOTION_ROLL: return "roll";
     case MOTION_CENTER: return "center";
     case MOTION_RANDOM: return "random";
+    case MOTION_DESK: return "desk";
+    case MOTION_NAP: return "nap";
     default: return "idle";
   }
 }
@@ -373,11 +392,14 @@ void getMotionFrames(MotionId motion, const MotionFrame *&frames, uint8_t &count
     case MOTION_DIAGONAL: frames = DIAGONAL_FRAMES; count = sizeof(DIAGONAL_FRAMES) / sizeof(DIAGONAL_FRAMES[0]); break;
     case MOTION_ROLL: frames = ROLL_FRAMES; count = sizeof(ROLL_FRAMES) / sizeof(ROLL_FRAMES[0]); break;
     case MOTION_CENTER: frames = CENTER_FRAMES; count = sizeof(CENTER_FRAMES) / sizeof(CENTER_FRAMES[0]); break;
+    case MOTION_DESK: frames = deskFrames; count = deskFrameCount; break;
+    case MOTION_NAP: frames = NAP_FRAMES; count = sizeof(NAP_FRAMES) / sizeof(NAP_FRAMES[0]); break;
     default: frames = nullptr; count = 0; break;
   }
 }
 
 void setPoseTargets(int x, int y, int topOpen, int bottomOpen) {
+  displayPose = {(int16_t)x, (int16_t)y, (int16_t)topOpen, (int16_t)bottomOpen, 0};
   setServoTarget(HORIZONTAL, logicalToServoAngle(HORIZONTAL, constrain(x, -100, 100)));
   setServoTarget(VERTICAL, logicalToServoAngle(VERTICAL, constrain(y, -100, 100)));
   setServoTarget(TOP_LID, opennessToServoAngle(TOP_LID, constrain(topOpen, 0, 100)));
@@ -406,9 +428,28 @@ void beginConcreteMotion(MotionId motion) {
   if (frames && count) applyMotionFrame(frames[0]);
 }
 
+void scheduleDeskNap() {
+  deskStartedMs = millis();
+  deskNapDelayMs = DESK_NAP_MIN_MS + esp_random() % DESK_NAP_SPREAD_MS;
+}
+
+void beginDeskGlance() {
+  int16_t x = (int16_t)(esp_random() % 111) - 55;
+  int16_t y = (int16_t)(esp_random() % 57) - 28;
+  if (esp_random() % 5 == 0) x = y = 0;
+  const bool blink = esp_random() % 3 == 0;
+  const uint16_t hold = 950 + esp_random() % 3300;
+  deskFrames[0] = {x, y, 100, 100, hold};
+  deskFrames[1] = {x, y, 0, 0, 460};
+  deskFrames[2] = {x, y, 100, 100, 550};
+  deskFrameCount = blink ? 3 : 1;
+  beginConcreteMotion(MOTION_DESK);
+}
+
 void cancelMotion() {
   activeMotion = MOTION_NONE;
   randomShow = false;
+  deskMode = false;
   motionFrameIndex = 0;
 }
 
@@ -416,7 +457,14 @@ bool startMotion(MotionId motion) {
   if (!allServosEnabled()) return false;
   controlMode = MODE_WEB;
   blinkUntilMs = 0;
+  // Nap Now during Desk mode resumes the automatic glances after waking.
+  deskMode = motion == MOTION_DESK || (motion == MOTION_NAP && deskMode);
   randomShow = motion == MOTION_RANDOM;
+  if (motion == MOTION_DESK) {
+    scheduleDeskNap();
+    beginDeskGlance();
+    return true;
+  }
   MotionId concrete = motion;
   if (randomShow) concrete = (MotionId)(MOTION_BLINK + (esp_random() % 5));
   beginConcreteMotion(concrete);
@@ -432,7 +480,11 @@ void updateMotion() {
   if (millis() - motionFrameStartedMs < frames[motionFrameIndex].durationMs) return;
   ++motionFrameIndex;
   if (motionFrameIndex >= count) {
-    if (randomShow) {
+    if (deskMode) {
+      if (activeMotion == MOTION_NAP) scheduleDeskNap();
+      if (millis() - deskStartedMs >= deskNapDelayMs) beginConcreteMotion(MOTION_NAP);
+      else beginDeskGlance();
+    } else if (randomShow) {
       const MotionId next = (MotionId)(MOTION_BLINK + (esp_random() % 5));
       beginConcreteMotion(next);
     } else {
@@ -575,13 +627,17 @@ void sendState() {
   json += ",\"allEnabled\":";
   json += allServosEnabled() ? "true" : "false";
   json += ",\"animation\":\"";
-  json += randomShow ? "random" : motionName(activeMotion);
+  json += deskMode ? "desk" : randomShow ? "random" : motionName(activeMotion);
   json += "\",\"animationDetail\":\"";
-  json += motionName(activeMotion);
+  json += activeMotion == MOTION_DESK ? (motionFrameIndex == 1 ? "blink" : "glance") : motionName(activeMotion);
   json += "\",\"control\":{\"x\":"; json += webX;
   json += ",\"y\":"; json += webY;
   json += ",\"top\":"; json += webTopOpen;
   json += ",\"bottom\":"; json += webBottomOpen;
+  json += "},\"displayPose\":{\"x\":"; json += displayPose.x;
+  json += ",\"y\":"; json += displayPose.y;
+  json += ",\"top\":"; json += displayPose.topOpen;
+  json += ",\"bottom\":"; json += displayPose.bottomOpen;
   json += "},\"network\":{\"apSsid\":\"";
   json += AP_SSID;
   json += "\",\"apIp\":\"";
@@ -825,6 +881,8 @@ void configureWebServer() {
     else if (name == "roll") motion = MOTION_ROLL;
     else if (name == "center") motion = MOTION_CENTER;
     else if (name == "random") motion = MOTION_RANDOM;
+    else if (name == "desk") motion = MOTION_DESK;
+    else if (name == "nap") motion = MOTION_NAP;
     else return sendBadRequest("invalid animation");
     if (!startMotion(motion)) return sendConflict("enable all outputs before starting a motion");
     sendState();
