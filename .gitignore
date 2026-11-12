@@ -1,0 +1,4 @@
+.pio/
+.playwright-cli/
+*.ino.cpp
+*.bin
